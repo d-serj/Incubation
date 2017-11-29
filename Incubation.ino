@@ -1,3 +1,5 @@
+template<class T> inline Print &operator <<(Print &obj, T arg) { obj.print(arg); return obj; }
+
 #include <LiquidCrystal_I2C.h>
 #include <i2c_SI7021.h>
 #include <OneWire.h>
@@ -16,24 +18,29 @@ OneWire dsTemp(DS18B20_PIN);
 
 unsigned long previousMillis = 0;
 
+double Setpoint;									// Необходимая температура
+double Input;										// Входные температуры
+double Output;										// Выход от 0 до 1000
+double Kp = 2, Ki = 5, Kd = 1;
+PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+
 struct parameters
 {
-	uint8_t period;
-	uint8_t endDay;
-	float needTemp;
-	uint8_t needHum;
-	uint8_t eggTurns;
-	uint8_t aeration;
-	uint8_t aerationTime;
+	uint8_t period;									// Номер периода
+	uint8_t endDay;									// День окончания периода
+	float needTemp;									// Необходимая температура
+	uint8_t needHum;								// Необходимая влажность
+	uint8_t eggTurns;								// Нужен ли поворот яиц?
+	uint8_t aeration;								// Нужно ли проветривание?
+	uint8_t aerationTime;							// Время проветривания, мин
 };
 
-// Reading byte : pgm_read_byte_near(&parameter[1].endDay)
-// Reading float: pgm_read_float_near(&parameter[1].needTemp)
-
+// Reading byte for PROGMEM : pgm_read_byte_near(&parameter[1].endDay)
+// Reading float for PROGMEM: pgm_read_float_near(&parameter[1].needTemp)
 // Structures of parameters of incubation
 const parameters parameter[4] PROGMEM  = 
 { 
-/*  per  endDay   temp    hum%  turn  aerat aeratTime */  
+/* per | endDay | temp | hum% | turn | aerat | aeratTime */  
 	{1,    11,    37.9,    66,    4,    0,    0},
 	{2,    17,    37.3,    53,    4,    2,    5},
 	{3,    19,    37.3,    47,    4,    2,    20},
@@ -45,6 +52,7 @@ void setup(void)
 	Serial.begin(9600);
 	initLCD();
 	initSI7021();
+	myPID.SetMode(AUTOMATIC);
 }
 
 void loop(void)
@@ -58,6 +66,8 @@ void loop(void)
 		getSi7021(temp2, humi);								// interval 1000 ms
 		previousMillis = currentMillis;
 	}
+
+	thermostat(temp1, temp2);
 
 	lcd.setCursor(0, 0);
 	lcd.print("TEMPERATURE 1:");
@@ -88,9 +98,9 @@ void initLCD(void)
 	//lcd.backlight();
 
 	lcd.setCursor(5, 1);
-	lcd.print("Home");
+	lcd.print("HOME");
 	lcd.setCursor(5, 0);
-	lcd.print("Incubator");
+	lcd.print("INCUBATOR");
 
 	delay(5000);
 	lcd.clear();
@@ -162,4 +172,12 @@ void getSi7021(float &f_temp2, float &f_humi)
 	{
 		Serial.println("Error reding data SI7021");
 	}
+}
+
+void thermostat(float &temp1, float &temp2)
+{
+	Input = (temp1 + temp2) / 2;
+	Setpoint = 100;
+	myPID.Compute();
+	Serial << "Input is: " << Input << " and Output is: " << Output << '\n';
 }
