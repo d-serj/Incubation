@@ -1,22 +1,25 @@
-template<class T> inline Print &operator <<(Print &obj, T arg) { obj.print(arg); return obj; }
-
 #include <LiquidCrystal_I2C.h>
 #include <i2c_SI7021.h>
 #include <OneWire.h>
 #include <PID\PID_v1.h>
+#include <Wire.h>
+#include "RTClib.h"
 
-/*** BEGIN PINS ***/
+//*** BEGIN PINS ***
 #define DS18B20_PIN 10								// Пин датчика температуры DS18B20
-/*** END PINS ***/
+//*** END PINS ***
 
 // TODO: another defines
 #define SENSORS_DELAY 900							// ms
+// END
+
+// Streaming
+template<class T> inline Print &operator << (Print &obj, T arg) { obj.print(arg); return obj; }
 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 SI7021 si7021;
 OneWire dsTemp(DS18B20_PIN);
-
-unsigned long previousMillis = 0;
+DS3231 RTC;
 
 double Setpoint;									// Необходимая температура
 double Input;										// Входные температуры
@@ -40,11 +43,11 @@ struct parameters
 // Structures of parameters of incubation
 const parameters parameter[4] PROGMEM  = 
 { 
-/* per | endDay | temp | hum% | turn | aerat | aeratTime */  
-	{1,    11,    37.9,    66,    4,    0,    0},
-	{2,    17,    37.3,    53,    4,    2,    5},
-	{3,    19,    37.3,    47,    4,    2,    20},
-	{4,    21,    37.0,    66,    0,    2,    5}
+/*  per | endDay |  temp |  hum% | turn | aerat | aeratTime */  
+	{1,     11,     37.9,    66,     4,     0,     0},
+	{2,     17,     37.3,    53,     4,     2,     5},
+	{3,     19,     37.3,    47,     4,     2,     20},
+	{4,     21,     37.0,    66,     0,     2,     5}
 };
 
 void setup(void)
@@ -53,11 +56,20 @@ void setup(void)
 	initLCD();
 	initSI7021();
 	myPID.SetMode(AUTOMATIC);
+	Wire.begin();
+	RTC.begin();
+
+	
 }
 
 void loop(void)
 {
+	DateTime now = RTC.now();
+
+	static unsigned long startTimeUnix = now.unixtime();
+
 	static float temp1, temp2, humi;
+	static unsigned long previousMillis = 0;
 	unsigned long currentMillis = millis();
 
 	if (currentMillis - previousMillis >= SENSORS_DELAY)
@@ -70,25 +82,13 @@ void loop(void)
 	thermostat(temp1, temp2);
 
 	lcd.setCursor(0, 0);
-	lcd.print("TEMPERATURE 1:");
-	lcd.print(temp1);
-	lcd.print("C");
-
+	lcd << "TEMP 1   : " << temp1 << "C";
 	lcd.setCursor(0, 1);
-	lcd.print("TEMPERATURE 2:");
-	lcd.print(temp2);
-	lcd.print("C");
-
+	lcd << "TEMP 2   : " << temp2 << "C";
 	lcd.setCursor(0, 2);
-	lcd.print("HUMIDITY     :");
-	lcd.print(humi);
-	lcd.print("%");
-
+	lcd << "HUMI     : " << humi << "%";
 	lcd.setCursor(0, 3);
-	lcd.print("Work time    :");
-	lcd.print(currentMillis / 1000);
-	lcd.print("s");
-
+	lcd << "WORK TIME: " << now.unixtime() - startTimeUnix << " s";        // Время работы в секундах
 }
 
 /* Initialize LCD and show first message on screen */
@@ -113,7 +113,7 @@ void initSI7021(void)
 		Serial.println("Sensor found!");
 	else
 	{
-		Serial.println("Sensor missing");
+		Serial.println("Sensor si7021 is missing");
 		delay(1000);
 	}
 }
@@ -168,16 +168,18 @@ void getSi7021(float &f_temp2, float &f_humi)
 	si7021.getTemperature(f_temp2);
 	si7021.triggerMeasurement();
 
-	if (f_temp2 <= 0)
+	if (f_temp2 <= 0 || f_temp2 > 128.9)
 	{
 		Serial.println("Error reding data SI7021");
 	}
 }
 
-void thermostat(float &temp1, float &temp2)
+uint8_t thermostat(float &temp1, float &temp2)
 {
 	Input = (temp1 + temp2) / 2;
 	Setpoint = 100;
 	myPID.Compute();
-	Serial << "Input is: " << Input << " and Output is: " << Output << '\n';
+	//Serial << "Input is: " << Input << " and Output is: " << map(Output, 0, 255, 0, 1000) << '\n';
+
+	return 0;
 }
