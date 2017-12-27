@@ -41,13 +41,13 @@ struct parameters
 // Reading byte for PROGMEM : pgm_read_byte_near(&parameter[1].endDay)
 // Reading float for PROGMEM: pgm_read_float_near(&parameter[1].needTemp)
 // Structures of parameters of incubation
-const parameters parameter[4] PROGMEM  = 
-{ 
-/*  per | endDay |  temp |  hum% | turn | aerat | aeratTime */  
-	{1,     11,     37.9,    66,     4,     0,     0},
-	{2,     17,     37.3,    53,     4,     2,     5},
-	{3,     19,     37.3,    47,     4,     2,     20},
-	{4,     21,     37.0,    66,     0,     2,     5}
+const parameters parameter[4] PROGMEM =
+{
+	/*  per | endDay |  temp |  hum% | turn | aerat | aeratTime */
+		{1,     11,     37.9,    66,     4,     0,     0},
+		{2,     17,     37.3,    53,     4,     2,     5},
+		{3,     19,     37.3,    47,     4,     2,     20},
+		{4,     21,     37.0,    66,     0,     2,     5}
 };
 
 void setup(void)
@@ -59,7 +59,7 @@ void setup(void)
 	Wire.begin();
 	RTC.begin();
 
-	
+
 }
 
 void loop(void)
