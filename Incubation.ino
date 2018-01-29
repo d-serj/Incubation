@@ -9,15 +9,30 @@
 #include "RTClib.h"
 
 //*** BEGIN PINS ***
-#define DS18B20_PIN    10									// Пин датчика температуры DS18B20
-#define ENCODER_BUTTON 4									// Пин кнопки энкодера
+#define DS18B20_PIN    10										// Пин датчика температуры DS18B20
+#define ENCODER_BUTTON 4										// Пин кнопки энкодера
 #define ENC_PIN1       5
 #define ENC_PIN2       6
 //*** END PINS ***
 
 // TODO: another defines
-#define SENSORS_DELAY  900									// ms
-//
+#define SENSORS_DELAY         900								// ms
+#define EEPROM_WRITE_DELAY    1800								// Задержка записи EEPROM в секундах
+
+uint8_t currentPeriod = 0;										// Текущий преиод инкубации, зависит от parameter[].endDay дня инкубации
+float tempDS18B20;												// Температура с датчика DS18B20
+float tempSI7021;												// Температура с датчика Si7021
+float humiSI7021;												// Влажность с датчика Si7021
+float currentNeedTemp;											// Нужная в текущий момент температура
+uint8_t currentNeedHum;											// Нужная в текущий момент влажность
+
+/**** PID ****/
+double Setpoint;												// Необходимая температура
+double Input;													// Входные температуры
+double Output;													// Выход от 0 до 1000
+double Kp = 2, Ki = 5, Kd = 1;
+PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+/*************/
 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 SI7021 si7021;
@@ -26,18 +41,13 @@ DS3231 RTC;
 Bounce encoderButton = Bounce();							// Антидребезг кнопка энкодера
 Encoder myEnc(ENC_PIN1, ENC_PIN2);
 
-double Setpoint;											// Необходимая температура
-double Input;												// Входные температуры
-double Output;												// Выход от 0 до 1000
-double Kp = 2, Ki = 5, Kd = 1;
-PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 
 struct parameters
 {
-	uint8_t period;											// Номер периода
+	//uint8_t period;										// Номер периода
 	uint8_t endDay;											// День окончания периода
-	float needTemp;											// Необходимая температура
-	uint8_t needHum;										// Необходимая влажность
+	float neededTemp;										// Необходимая температура
+	uint8_t neededHum;										// Необходимая влажность
 	uint8_t eggTurns;										// Нужен ли поворот яиц?
 	uint8_t aeration;										// Нужно ли проветривание?
 	uint8_t aerationTime;									// Время проветривания, мин
@@ -48,11 +58,11 @@ struct parameters
 // Structures of parameters of incubation
 const parameters parameter[4] PROGMEM =
 {
-	/*  per | endDay |  temp |  hum% | turn | aerat | aeratTime */
-		{1,     11,     37.9,    66,     4,     0,     0},
-		{2,     17,     37.3,    53,     4,     2,     5},
-		{3,     19,     37.3,    47,     4,     2,     20},
-		{4,     21,     37.0,    66,     0,     2,     5}
+/* endDay |  temp |  hum% | turn | aerat | aeratTime */
+	{11,     37.9,    66,     4,     0,     0},
+	{17,     37.3,    53,     4,     2,     5},
+	{19,     37.3,    47,     4,     2,     20},
+	{21,     37.0,    66,     0,     2,     5}
 };
 
 // Streaming
@@ -62,10 +72,9 @@ template<class T> inline Print &operator << (Print &obj, T arg)
 	return obj; 
 }
 
+
 void setup(void)
 {
-	float temp;
-
 	Serial.begin(9600);
 	initLCD();
 	initSI7021();
@@ -74,7 +83,6 @@ void setup(void)
 	RTC.begin();
 	
 	pinMode(ENCODER_BUTTON, INPUT);
-
 	encoderButton.attach(ENCODER_BUTTON);									// Антидребезг кнопка энкодера
 	encoderButton.interval(5);												// 5 ms антидребезг кнопки
 	
@@ -93,23 +101,48 @@ void setup(void)
 void loop(void)
 {
 	DateTime now = RTC.now();
-
-	static unsigned long startTimeUnix = now.unixtime();
-	static float temp1, temp2, humi;
-	static unsigned long previousMillis = 0;
-	unsigned long currentMillis = millis();
+	static uint32_t startTimeUnix = now.unixtime() / 86400L;					// Дней с 1970
+	static uint16_t currentDay;
+	uint8_t currentDay_EEPROM;
+	uint8_t currentPeriod_EEPROM;
+	static uint32_t delayTime = now.unixtime();
 	static bool encoderButtonPress = false;
-	//parameters currentParameters = parameter[1];
 
-	if (currentMillis - previousMillis >= SENSORS_DELAY)
+	/*******************ОТВЕТСТВЕННЫЙ БЛОК ТРЕБУЮЩИЙ ПРОВЕРКИ****************/
+	currentDay = startTimeUnix - now.unixtime() / 86400L;
+	
+	if (now.unixtime() - delayTime > EEPROM_WRITE_DELAY)
 	{
-		getTempDS18B20(temp1);													// interval 2000 ms
-		getSi7021(temp2, humi);													// interval 1000 ms
-		previousMillis = currentMillis;
+		EEPROM_write(1, currentDay);
+		// TODO
+		delayTime = now.unixtime();
 	}
 
-	thermostat(temp1, temp2);
+	EEPROM_read(1, currentDay_EEPROM);
+	EEPROM_read(5, currentPeriod);
+	if (currentDay_EEPROM == (uint8_t)parameter[currentPeriod].endDay)
+	{
+		currentNeedTemp = parameter[currentPeriod].neededTemp;
+		currentNeedHum  = parameter[currentPeriod].neededHum;
+		
+		// Проблема: при исчезновении питания и после перезагрузки currentPeriod будет сбиваться
+		currentPeriod++;
 
+		if (currentPeriod > 3)
+			currentPeriod = 0;
+
+		EEPROM_write(5, (uint8_t)currentPeriod);
+	}
+	/********************КОНЕЦ ОТВЕТСТВЕННОГО БЛОКА ТРЕБУЮЩЕГО ПРОВЕРКИ*********/
+
+
+	lcd.setCursor(3, 1);
+	lcd << now.format("hh:mm:ss\0");
+
+	getSensors();
+	thermostat();
+
+	/*
 	encoderButton.update();
 	if (encoderButton.rose())
 	{
@@ -118,12 +151,13 @@ void loop(void)
 
 	if (encoderButtonPress)
 	{
-		mainScreenProcessing(now, startTimeUnix, temp1, temp2, humi);
+		mainScreenProcessing(now, startTimeUnix);
 	}
 	else
 	{
 		menuScreenProcessing();
 	}
+	*/
 }
 
 
@@ -156,8 +190,21 @@ void initSI7021(void)
 }
 
 
+void getSensors(void)
+{
+	static unsigned long previousMillis = 0;
+	unsigned long currentMillis = millis();
+
+	if (currentMillis - previousMillis >= SENSORS_DELAY)
+	{
+		getTempDS18B20();													// interval 2000 ms
+		getSi7021();														// interval 1000 ms
+		previousMillis = currentMillis;
+	}
+}
+
 /* Получаем температуру с датчика DS18B20 с задержкой 2000 миллисекунд при SENSORS_DELAY 900 */
-void getTempDS18B20(float &f_temp1)
+void getTempDS18B20()
 {
 	byte buff[9];
 	static bool requestTemp = TRUE;												// Get off delay 750ms to read data from ds18b20
@@ -185,7 +232,7 @@ void getTempDS18B20(float &f_temp1)
 		if (OneWire::crc8(buff, 8) == buff[8])
 		{
 			// Конвертация сырых данных
-			f_temp1 = (float)((int)buff[0] | (((int)buff[1]) << 8)) * 0.0625 + 0.03125;
+			tempDS18B20 = (float)((int)buff[0] | (((int)buff[1]) << 8)) * 0.0625 + 0.03125;
 			//Serial.println(f_temp1, DEC);
 
 			return;
@@ -193,29 +240,29 @@ void getTempDS18B20(float &f_temp1)
 
 		else
 		{
-			f_temp1 = 0;
+			tempDS18B20 = 0;
 			//Serial.println("Error reading data DS18B20");
 		}
 	}
 }
 
 
-void getSi7021(float &f_temp2, float &f_humi)
+void getSi7021()
 {
-	si7021.getHumidity(f_humi);
-	si7021.getTemperature(f_temp2);
+	si7021.getHumidity(humiSI7021);
+	si7021.getTemperature(tempSI7021);
 	si7021.triggerMeasurement();
 
-	if (f_temp2 <= 0 || f_temp2 > 128.9)
+	if (tempSI7021 <= 0 || tempSI7021 > 128.9)
 	{
 		Serial.println("Error reding data SI7021");
 	}
 }
 
 
-uint8_t thermostat(float &temp1, float &temp2)
+uint8_t thermostat()
 {
-	Input = (temp1 + temp2) / 2;
+	Input = (tempDS18B20 + tempSI7021) / 2;
 	Setpoint = 100;
 	myPID.Compute();
 	//Serial << "Input is: " << Input << " and Output is: " << map(Output, 0, 255, 0, 1000) << '\n';
@@ -225,14 +272,14 @@ uint8_t thermostat(float &temp1, float &temp2)
 
 
 /* Главный экран */
-void mainScreenProcessing(DateTime time, unsigned long _startUnixTime, float _temp1, float _temp2, float _humi)
+void mainScreenProcessing(DateTime time, unsigned long _startUnixTime)
 {
 	lcd.setCursor(0, 0);
-	lcd << "T1   : " << _temp1 << "C";
+	lcd << "T1   : " << tempDS18B20 << "C";
 	lcd.setCursor(0, 1);
-	lcd << "T2   : " << _temp2 << "C";
+	lcd << "T2   : " << tempSI7021 << "C";
 	lcd.setCursor(0, 2);
-	lcd << "H    : " << _humi << "%";
+	lcd << "H    : " << humiSI7021 << "%";
 	lcd.setCursor(0, 3);
 	lcd << "TIME : " <<  time.hour() << ":" << time.minute() << ":" << time.second();        // Время работы в секундах
 	/* time.unixtime() - _startUnixTime  сколько времени прошло */
@@ -277,7 +324,6 @@ void menuScreenProcessing(void)
 	case 3:
 		lcd.setCursor(0, 0);
 		lcd << "4";
-
 	}
 }
 
